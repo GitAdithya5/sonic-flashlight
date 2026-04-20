@@ -1,10 +1,9 @@
 import streamlit as st
 import time
-import subprocess
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
-import io
+import os
 
 st.set_page_config(
     page_title="Sonic Flashlight",
@@ -17,7 +16,6 @@ st.caption("AI-powered assistive navigation device for the visually impaired")
 st.divider()
 
 st.sidebar.title("Settings")
-
 conf_threshold = st.sidebar.slider(
     "Confidence Threshold",
     min_value=0.05,
@@ -25,7 +23,6 @@ conf_threshold = st.sidebar.slider(
     value=0.15,
     step=0.05
 )
-
 st.sidebar.divider()
 st.sidebar.caption("Sonic Flashlight v1.0")
 st.sidebar.caption("YOLO26n Nano Model")
@@ -41,7 +38,8 @@ if "last_latency" not in st.session_state:
 
 @st.cache_resource
 def load_model():
-    return YOLO("yolo26n.pt")
+    model = YOLO("yolo26n.pt")
+    return model
 
 with st.spinner("Loading YOLO26n model..."):
     model = load_model()
@@ -60,8 +58,10 @@ def get_position(box, img_width):
         return "in front of you"
 
 st.subheader("Upload an image to scan")
+st.caption("Take a photo on your phone and upload it here")
+
 uploaded_file = st.file_uploader(
-    "Take a photo or upload an image",
+    "Choose an image",
     type=["jpg", "jpeg", "png"]
 )
 
@@ -86,44 +86,44 @@ if clear_button:
 
 st.divider()
 
-if scan_button and uploaded_file is not None:
-    image = Image.open(uploaded_file).convert("RGB")
-    img_array = np.array(image)
-    img_width = image.width
+if scan_button:
+    if uploaded_file is None:
+        st.warning("Please upload an image first")
+    else:
+        image = Image.open(uploaded_file).convert("RGB")
+        img_array = np.array(image)
+        img_width = image.width
 
-    st.session_state.last_frame = image
+        st.session_state.last_frame = image
 
-    start_time = time.time()
-    results = model(img_array, verbose=False, conf=conf_threshold)
-    names = model.names
-    detected = []
+        start_time = time.time()
+        results = model(img_array, verbose=False, conf=conf_threshold)
+        names = model.names
+        detected = []
 
-    for r in results:
-        for i, cls in enumerate(r.boxes.cls):
-            label = names[int(cls)]
-            box = r.boxes.xyxy[i].tolist()
-            position = get_position(box, img_width)
-            entry = f"{label} — {position}"
-            if entry not in detected:
-                detected.append(entry)
+        for r in results:
+            for i, cls in enumerate(r.boxes.cls):
+                label = names[int(cls)]
+                box = r.boxes.xyxy[i].tolist()
+                position = get_position(box, img_width)
+                entry = f"{label} — {position}"
+                if entry not in detected:
+                    detected.append(entry)
 
-    end_time = time.time()
-    latency = round(end_time - start_time, 3)
+        end_time = time.time()
+        latency = round(end_time - start_time, 3)
 
-    st.session_state.last_detected = detected
-    st.session_state.last_latency = latency
+        st.session_state.last_detected = detected
+        st.session_state.last_latency = latency
 
-    if detected:
-        timestamp = time.strftime("%H:%M:%S")
-        st.session_state.history.insert(0, {
-            "Time": timestamp,
-            "Objects Detected": ", ".join(detected),
-            "Latency": f"{latency}s"
-        })
-        st.session_state.history = st.session_state.history[:10]
-    
-elif scan_button and uploaded_file is None:
-    st.warning("Please upload an image first")
+        if detected:
+            timestamp = time.strftime("%H:%M:%S")
+            st.session_state.history.insert(0, {
+                "Time": timestamp,
+                "Objects Detected": ", ".join(detected),
+                "Latency": f"{latency}s"
+            })
+            st.session_state.history = st.session_state.history[:10]
 
 if st.session_state.last_frame is not None:
     st.image(
