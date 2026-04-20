@@ -1,9 +1,10 @@
 import streamlit as st
-import cv2
 import time
 import subprocess
 import numpy as np
+from PIL import Image
 from ultralytics import YOLO
+import io
 
 st.set_page_config(
     page_title="Sonic Flashlight",
@@ -17,18 +18,6 @@ st.divider()
 
 st.sidebar.title("Settings")
 
-source = st.sidebar.radio(
-    "Camera Source",
-    ["MacBook Webcam", "ESP32-CAM Stream"]
-)
-
-esp32_url = ""
-if source == "ESP32-CAM Stream":
-    esp32_url = st.sidebar.text_input(
-        "ESP32 Stream URL",
-        placeholder="http://192.168.1.45:81/stream"
-    )
-
 conf_threshold = st.sidebar.slider(
     "Confidence Threshold",
     min_value=0.05,
@@ -37,10 +26,9 @@ conf_threshold = st.sidebar.slider(
     step=0.05
 )
 
-speak_results = st.sidebar.checkbox("Speak results aloud", value=True)
 st.sidebar.divider()
 st.sidebar.caption("Sonic Flashlight v1.0")
-st.sidebar.caption("YOLO26n + MPS Acceleration")
+st.sidebar.caption("YOLO26n Nano Model")
 
 if "history" not in st.session_state:
     st.session_state.history = []
@@ -60,10 +48,10 @@ with st.spinner("Loading YOLO26n model..."):
 
 st.success("Model loaded — ready to scan")
 
-def get_position(box, frame_width):
+def get_position(box, img_width):
     x1, y1, x2, y2 = box
     centre_x = (x1 + x2) / 2
-    ratio = centre_x / frame_width
+    ratio = centre_x / img_width
     if ratio < 0.33:
         return "on your left"
     elif ratio > 0.66:
@@ -71,11 +59,24 @@ def get_position(box, frame_width):
     else:
         return "in front of you"
 
+st.subheader("Upload an image to scan")
+uploaded_file = st.file_uploader(
+    "Take a photo or upload an image",
+    type=["jpg", "jpeg", "png"]
+)
+
 col1, col2 = st.columns(2)
 with col1:
-    scan_button = st.button("Scan Now", use_container_width=True, type="primary")
+    scan_button = st.button(
+        "Scan Image",
+        use_container_width=True,
+        type="primary"
+    )
 with col2:
-    clear_button = st.button("Clear History", use_container_width=True)
+    clear_button = st.button(
+        "Clear History",
+        use_container_width=True
+    )
 
 if clear_button:
     st.session_state.history = []
@@ -85,50 +86,15 @@ if clear_button:
 
 st.divider()
 
-if scan_button:
-    if source == "MacBook Webcam":
-        cap = cv2.VideoCapture(0)
-    else:
-        if not esp32_url:
-            st.error("Please enter your ESP32 stream URL in the sidebar")
-            st.stop()
-        cap = cv2.VideoCapture(esp32_url)
+if scan_button and uploaded_file is not None:
+    image = Image.open(uploaded_file).convert("RGB")
+    img_array = np.array(image)
+    img_width = image.width
 
-    if not cap.isOpened():
-        st.error("Could not open camera.")
-        st.stop()
-
-    # Set camera properties for better exposure
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_BRIGHTNESS, 150)
-    cap.set(cv2.CAP_PROP_EXPOSURE, -1)  # auto exposure
-
-    # Warm up camera with 30 frames so exposure adjusts properly
-    with st.spinner("Camera warming up..."):
-        for _ in range(30):
-            cap.read()
-            time.sleep(0.05)
-
-    ret, frame = cap.read()
-    cap.release()
-
-    if not ret:
-        st.error("Could not read frame")
-        st.stop()
-
-    # Check if frame is too dark and brighten it
-    if frame.mean() < 30:
-        frame = cv2.convertScaleAbs(frame, alpha=3.0, beta=50)
-    elif frame.mean() < 60:
-        frame = cv2.convertScaleAbs(frame, alpha=2.0, beta=30)
-
-    frame_height, frame_width = frame.shape[:2]
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    st.session_state.last_frame = frame_rgb
+    st.session_state.last_frame = image
 
     start_time = time.time()
-    results = model(frame, verbose=False, conf=conf_threshold)
+    results = model(img_array, verbose=False, conf=conf_threshold)
     names = model.names
     detected = []
 
@@ -136,7 +102,7 @@ if scan_button:
         for i, cls in enumerate(r.boxes.cls):
             label = names[int(cls)]
             box = r.boxes.xyxy[i].tolist()
-            position = get_position(box, frame_width)
+            position = get_position(box, img_width)
             entry = f"{label} — {position}"
             if entry not in detected:
                 detected.append(entry)
@@ -155,18 +121,14 @@ if scan_button:
             "Latency": f"{latency}s"
         })
         st.session_state.history = st.session_state.history[:10]
+    
+elif scan_button and uploaded_file is None:
+    st.warning("Please upload an image first")
 
-        if speak_results:
-            subprocess.run(["say", ", ".join(detected)])
-    else:
-        if speak_results:
-            subprocess.run(["say", "Nothing detected"])
-
-# always show last frame and results
 if st.session_state.last_frame is not None:
     st.image(
         st.session_state.last_frame,
-        caption="Last Captured Frame",
+        caption="Scanned Image",
         width=640
     )
 
@@ -174,11 +136,11 @@ if st.session_state.last_detected:
     st.success("Detected: " + ", ".join(st.session_state.last_detected))
     st.caption(f"Inference latency: {st.session_state.last_latency}s")
 elif st.session_state.last_latency is not None:
-    st.warning("Nothing detected — try lowering confidence or improve lighting")
+    st.warning("Nothing detected — try lowering confidence threshold")
 
 st.divider()
 st.subheader("Detection History")
 if st.session_state.history:
     st.table(st.session_state.history)
 else:
-    st.caption("No scans yet — press Scan Now to start")
+    st.caption("No scans yet — upload an image and press Scan Image")
